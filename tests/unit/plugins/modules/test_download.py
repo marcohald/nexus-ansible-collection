@@ -117,7 +117,6 @@ class TestNexusDownloadModule:
         mock_fetch_url.assert_called_once_with(
             mock_module,
             "https://api.github.com/repos/sonatype/nexus-public/releases/latest",
-            follow_redirects='safe',
             headers={'Accept': 'application/json'}
         )
 
