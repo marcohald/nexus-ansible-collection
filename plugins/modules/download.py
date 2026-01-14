@@ -63,11 +63,25 @@ options:
     type: int
     default: 120
     required: false
+  use_proxy:
+    description:
+      - If False, it will not use a proxy, even if one is defined in an environment variable on the target hosts.
+    type: bool
+    default: true
+    required: false
 author:
   - "Brian Veltman (@cloudkrafter)"
 '''
 
 EXAMPLES = '''
+- name: Download the latest Nexus package with Proxy
+  cloudkrafter.nexus.download:
+    state: latest
+    dest: /path/to/download/dir
+  environment:
+    http_proxy: http://proxy.example.com:8080
+    https_proxy: http://proxy.example.com:8080
+
 - name: Download the latest Nexus package
   cloudkrafter.nexus.download:
     state: latest
