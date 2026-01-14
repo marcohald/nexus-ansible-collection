@@ -117,6 +117,7 @@ class TestNexusDownloadModule:
         mock_fetch_url.assert_called_once_with(
             mock_module,
             "https://api.github.com/repos/sonatype/nexus-public/releases/latest",
+            follow_redirects='safe',
             headers={'Accept': 'application/json'}
         )
 
@@ -538,8 +539,7 @@ def test_main(mock_module, mock_get_latest, mock_get_url, mock_download):
         mock_download.assert_called_once_with(
             module_instance,
             'http://custom.example.com/nexus-3.78.0-01-unix.tar.gz',
-            '/tmp',
-            True
+            '/tmp'
         )
 
     #################################
@@ -980,8 +980,7 @@ def test_direct_url_download(mock_module, mock_validate, mock_download):
     mock_download.assert_called_with(
         module_instance,
         'https://custom-server.com/path/nexus-3.78.0-01-unix.tar.gz',
-        '/tmp',
-        True
+        '/tmp'
     )
 
     # Verify version was extracted from filename

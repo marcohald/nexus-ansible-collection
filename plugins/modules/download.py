@@ -154,6 +154,7 @@ def get_latest_version(module):
         response, info = fetch_url(
             module,
             url,
+            follow_redirects='safe',
             headers={'Accept': 'application/json'}
         )
 
@@ -393,7 +394,7 @@ def get_dest_path(url, dest):
     return os.path.join(dest, url.split('/')[-1])
 
 
-def download_file(module, url, dest, validate_certs=True):
+def download_file(module, url, dest):
     """Downloads a file using Ansible's fetch_url utility."""
 
     destination = get_dest_path(url, dest)
@@ -555,7 +556,7 @@ def main():
 
         # Perform the actual download
         changed, msg, destination, status_code = download_file(
-            module, download_url, dest, validate_certs)
+            module, download_url, dest)
 
         module.exit_json(
             changed=changed,
