@@ -18,6 +18,13 @@ from ansible_collections.cloudkrafter.nexus.plugins.modules.download import (
 )
 
 
+# Helper to create a mock module
+def create_mock_module():
+    mock_module = MagicMock()
+    mock_module.params = {'validate_certs': True, 'use_proxy': True}
+    return mock_module
+
+
 @pytest.mark.parametrize('version,expected', [
     ('3.78.0-01', True),        # Valid version
     ('3.78.1-02', True),        # Valid version
@@ -85,13 +92,15 @@ class TestNexusDownloadModule:
             'state': 'latest',
             'dest': '/tmp/nexus',
             'validate_certs': True,
+            'use_proxy': True,
             'version': None,
             'arch': None
         }
 
-    @patch('ansible_collections.cloudkrafter.nexus.plugins.modules.download.open_url')
-    def test_get_latest_version(self, mock_open_url):
+    @patch('ansible_collections.cloudkrafter.nexus.plugins.modules.download.fetch_url')
+    def test_get_latest_version(self, mock_fetch_url):
         """Test getting latest version from GitHub API"""
+        mock_module = create_mock_module()
 
         #################################
         # Test case for succesful response
@@ -99,16 +108,15 @@ class TestNexusDownloadModule:
 
         # Setup mock response
         mock_response = MagicMock()
-        mock_response.code = 200
         mock_response.read.return_value = b'{"name": "release-3.78.0-01"}'
-        mock_open_url.return_value = mock_response
+        mock_fetch_url.return_value = (mock_response, {'status': 200})
 
         # Test successful case
-        result = get_latest_version(validate_certs=True)
+        result = get_latest_version(mock_module)
         assert result == '3.78.0-01'
-        mock_open_url.assert_called_once_with(
+        mock_fetch_url.assert_called_once_with(
+            mock_module,
             "https://api.github.com/repos/sonatype/nexus-public/releases/latest",
-            validate_certs=True,
             headers={'Accept': 'application/json'}
         )
 
@@ -117,76 +125,70 @@ class TestNexusDownloadModule:
         #################################
 
         # Reset mock for empty response test
-        mock_open_url.reset_mock()
+        mock_fetch_url.reset_mock()
         mock_empty_response = MagicMock()
-        mock_empty_response.code = 200
         mock_empty_response.read.return_value = b'{"name": ""}'  # Empty name
-        mock_open_url.return_value = mock_empty_response
+        mock_fetch_url.return_value = (mock_empty_response, {'status': 200})
 
         # Test empty release name
         with pytest.raises(Exception, match="Failed to fetch version from API: No release found in API response"):
-            get_latest_version(validate_certs=True)
+            get_latest_version(mock_module)
 
         # Reset mock for missing name field test
-        mock_open_url.reset_mock()
+        mock_fetch_url.reset_mock()
         mock_missing_name_response = MagicMock()
-        mock_missing_name_response.code = 200
         mock_missing_name_response.read.return_value = b'{}'  # Missing name field
-        mock_open_url.return_value = mock_missing_name_response
+        mock_fetch_url.return_value = (mock_missing_name_response, {'status': 200})
 
         # Test missing name field
         with pytest.raises(Exception, match="Failed to fetch version from API: No release found in API response"):
-            get_latest_version(validate_certs=True)
+            get_latest_version(mock_module)
 
         #################################
         # Test case for invalid version in response
         #################################
 
         # Reset mock for invalid version format test
-        mock_open_url.reset_mock()
+        mock_fetch_url.reset_mock()
         mock_invalid_version_response = MagicMock()
-        mock_invalid_version_response.code = 200
         # Invalid version format
         mock_invalid_version_response.read.return_value = b'{"name": "release-invalid"}'
-        mock_open_url.return_value = mock_invalid_version_response
+        mock_fetch_url.return_value = (mock_invalid_version_response, {'status': 200})
 
         # Test invalid version format
         with pytest.raises(Exception, match="Failed to fetch version from API: Invalid version format: invalid"):
-            get_latest_version(validate_certs=True)
+            get_latest_version(mock_module)
 
         # Reset mock for non-release version format test
-        mock_open_url.reset_mock()
+        mock_fetch_url.reset_mock()
         mock_non_release_response = MagicMock()
-        mock_non_release_response.code = 200
         # Wrong prefix
         mock_non_release_response.read.return_value = b'{"name": "non-release-3.78.0-01"}'
-        mock_open_url.return_value = mock_non_release_response
+        mock_fetch_url.return_value = (mock_non_release_response, {'status': 200})
 
         # Test non-release version format
         with pytest.raises(Exception, match="Failed to fetch version from API: Invalid version format: non-release-3.78.0-01"):
-            get_latest_version(validate_certs=True)
+            get_latest_version(mock_module)
 
         #################################
         # Test case for API non-200 status code
         #################################
 
         # Reset mock for API error test (non-200 status code)
-        mock_open_url.reset_mock()
-        mock_error_response = MagicMock()
-        mock_error_response.code = 403
-        mock_open_url.return_value = mock_error_response
+        mock_fetch_url.reset_mock()
+        mock_fetch_url.return_value = (None, {'status': 403, 'msg': 'Forbidden'})
 
         # Test API error with non-200 status code
         with pytest.raises(Exception, match="Failed to fetch version from API: API request failed with status code: 403"):
-            get_latest_version(validate_certs=True)
+            get_latest_version(mock_module)
 
         # Reset mock for error test
-        mock_open_url.reset_mock()
-        mock_open_url.side_effect = Exception("Connection error")
+        mock_fetch_url.reset_mock()
+        mock_fetch_url.side_effect = Exception("Connection error")
 
         # Test API error
         with pytest.raises(Exception, match="Failed to fetch version from API"):
-            get_latest_version(validate_certs=True)
+            get_latest_version(mock_module)
 
     @patch('ansible_collections.cloudkrafter.nexus.plugins.modules.download.download_file')
     @patch('ansible_collections.cloudkrafter.nexus.plugins.modules.download.get_download_url')
@@ -347,38 +349,34 @@ def test_get_possible_package_names(version, arch, java_version, expected):
     assert result == expected
 
 
-@patch('ansible_collections.cloudkrafter.nexus.plugins.modules.download.open_url')
-def test_validate_download_url(mock_open_url):
+@patch('ansible_collections.cloudkrafter.nexus.plugins.modules.download.fetch_url')
+def test_validate_download_url(mock_fetch_url):
     """Test URL validation using HEAD requests"""
-    # Setup mock responses
-    mock_response_valid = MagicMock()
-    mock_response_valid.code = 200
-    mock_response_invalid = MagicMock()
-    mock_response_invalid.code = 404
+    mock_module = create_mock_module()
 
     # Test valid URL
-    mock_open_url.return_value = mock_response_valid
+    mock_fetch_url.return_value = (None, {'status': 200})
     is_valid, status_code = validate_download_url(
-        "https://download.sonatype.com/nexus/3/test.tar.gz")
+        mock_module, "https://download.sonatype.com/nexus/3/test.tar.gz")
     assert is_valid is True
     assert status_code == 200
 
     # Reset mock for invalid URL test
-    mock_open_url.reset_mock()
-    mock_open_url.side_effect = Exception("404 Not Found")
+    mock_fetch_url.reset_mock()
+    mock_fetch_url.return_value = (None, {'status': 404, 'msg': 'Not Found'})
 
     # Test invalid URL
     is_valid, status_code = validate_download_url(
-        "https://download.sonatype.com/nexus/3/nonexistent.tar.gz")
+        mock_module, "https://download.sonatype.com/nexus/3/nonexistent.tar.gz")
     assert is_valid is False
-    assert status_code is None
+    assert status_code == 404
 
     # Reset mock for connection error test
-    mock_open_url.reset_mock()
-    mock_open_url.side_effect = Exception("Connection error")
+    mock_fetch_url.reset_mock()
+    mock_fetch_url.side_effect = Exception("Connection error")
 
     # Test connection error
-    is_valid, status_code = validate_download_url("https://invalid.url")
+    is_valid, status_code = validate_download_url(mock_module, "https://invalid.url")
     assert is_valid is False
     assert status_code is None
 
@@ -386,8 +384,10 @@ def test_validate_download_url(mock_open_url):
 @patch('ansible_collections.cloudkrafter.nexus.plugins.modules.download.validate_download_url')
 def test_get_valid_download_urls(mock_validate):
     """Test getting valid download URLs by checking headers"""
+    mock_module = create_mock_module()
+
     # Setup mock responses for different URLs
-    def side_effect_func(url, *args, **kwargs):
+    def side_effect_func(module, url, *args, **kwargs):
         # Return True for specific patterns, False for others
         if "aarch64" in url or "aarch_64" in url:
             return (True, 200)
@@ -398,7 +398,7 @@ def test_get_valid_download_urls(mock_validate):
     # Test successful case
     base_url = "https://download.sonatype.com/nexus/3/"
     result = get_valid_download_urls(
-        '3.78.1-02', arch='aarch64', base_url=base_url, validate_certs=True)
+        mock_module, '3.78.1-02', arch='aarch64', base_url=base_url)
 
     # Verify we got valid URLs
     assert len(result) > 0
@@ -409,13 +409,13 @@ def test_get_valid_download_urls(mock_validate):
     # Test invalid version
     mock_validate.reset_mock()
     with pytest.raises(ValueError, match="Invalid version format"):
-        get_valid_download_urls('invalid')
+        get_valid_download_urls(mock_module, 'invalid')
 
     # Test when no valid URLs found
     mock_validate.reset_mock()
-    mock_validate.side_effect = lambda url, *args, **kwargs: (False, 404)  # All URLs return 404
+    mock_validate.side_effect = lambda module, url, *args, **kwargs: (False, 404)  # All URLs return 404
     with pytest.raises(ValueError, match="No valid download URLs found"):
-        get_valid_download_urls('3.78.1-02')
+        get_valid_download_urls(mock_module, '3.78.1-02')
 
 
 @patch('ansible_collections.cloudkrafter.nexus.plugins.modules.download.download_file')
@@ -448,10 +448,10 @@ def test_main(mock_module, mock_get_latest, mock_get_url, mock_download):
 
     main()
     mock_get_url.assert_called_with(
+        module_instance,
         'present',  # state as positional arg
         '3.78.0-01',  # version as positional arg
-        arch=None,  # arch as keyword arg
-        validate_certs=True  # validate_certs as keyword arg
+        arch=None  # arch as keyword arg
     )
 
     module_instance.exit_json.assert_called_with(
@@ -527,9 +527,9 @@ def test_main(mock_module, mock_get_latest, mock_get_url, mock_download):
 
         # Verify correct URL handling
         mock_get_valid_urls.assert_called_once_with(
+            module_instance,
             '3.78.0-01',
             arch='x86-64',
-            validate_certs=True,
             base_url='http://custom.example.com/'
         )
 
@@ -747,15 +747,13 @@ def test_get_dest_path():
 
 @patch('ansible_collections.cloudkrafter.nexus.plugins.modules.download.get_download_url')
 @patch('ansible_collections.cloudkrafter.nexus.plugins.modules.download.get_latest_version')
-@patch('ansible_collections.cloudkrafter.nexus.plugins.modules.download.open_url')
-def test_url_resolution(mock_open_url, mock_get_latest, mock_get_url):
+@patch('ansible_collections.cloudkrafter.nexus.plugins.modules.download.fetch_url')
+def test_url_resolution(mock_fetch_url, mock_get_latest, mock_get_url):
     """Test URL resolution logic"""
+    mock_module = create_mock_module()
+
     # Setup mock responses
-    mock_response = MagicMock()
-    mock_response.code = 200
-    mock_open_url.return_value = mock_response
-    mock_open_url.exceptions = type(
-        'Exceptions', (), {'RequestException': Exception})
+    mock_fetch_url.return_value = (None, {'status': 200})
 
     # Setup version and URL mocks
     mock_get_latest.return_value = '3.78.0-01'
@@ -768,25 +766,23 @@ def test_url_resolution(mock_open_url, mock_get_latest, mock_get_url):
 
     # Test URL validation
     valid_urls = get_valid_download_urls(
+        mock_module,
         version=version,
         arch=arch,
-        base_url=base_url,
-        validate_certs=True
+        base_url=base_url
     )
 
     assert len(valid_urls) > 0
-    assert mock_open_url.called
+    assert mock_fetch_url.called
     assert all(url.startswith(base_url) for url in valid_urls)
 
 
-@patch('ansible_collections.cloudkrafter.nexus.plugins.modules.download.open_url')
+@patch('ansible_collections.cloudkrafter.nexus.plugins.modules.download.fetch_url')
 @patch('ansible_collections.cloudkrafter.nexus.plugins.modules.download.validate_download_url')
 @patch('ansible_collections.cloudkrafter.nexus.plugins.modules.download.get_valid_download_urls')
-def test_error_handling(mock_get_valid_urls, mock_validate, mock_open_url):
+def test_error_handling(mock_get_valid_urls, mock_validate, mock_fetch_url):
     """Test error handling in various scenarios"""
-    mock_open_url.exceptions = type('Exceptions', (), {
-        'RequestException': Exception
-    })
+    mock_module = create_mock_module()
 
     # Test directory creation failure
     module = MagicMock()
@@ -802,22 +798,23 @@ def test_error_handling(mock_get_valid_urls, mock_validate, mock_open_url):
 
     # Test invalid version format
     with pytest.raises(ValueError, match="Invalid version format"):
-        get_valid_download_urls("invalid-version")
+        get_valid_download_urls(mock_module, "invalid-version")
 
     mock_validate.return_value = (True, 200)
 
     # Test get_download_url with invalid state
     with pytest.raises(ValueError, match="Invalid state"):
-        get_download_url(state='invalid', version='3.78.0-01')
+        get_download_url(mock_module, state='invalid', version='3.78.0-01')
 
     # Test get_download_url with missing version in present state
     with pytest.raises(ValueError, match="Version must be provided"):
-        get_download_url(state='present')
+        get_download_url(mock_module, state='present')
 
 
 @patch('ansible_collections.cloudkrafter.nexus.plugins.modules.download.get_valid_download_urls')
 def test_get_download_url(mock_get_valid_urls):
     """Test URL resolution in get_download_url function"""
+    mock_module = create_mock_module()
 
     #################################
     # Test successful case with single URL
@@ -826,10 +823,10 @@ def test_get_download_url(mock_get_valid_urls):
         'https://example.com/nexus-3.78.0-01-unix.tar.gz']
 
     result = get_download_url(
+        mock_module,
         state='present',
         version='3.78.0-01',
-        arch='x86-64',
-        validate_certs=True
+        arch='x86-64'
     )
     assert result == 'https://example.com/nexus-3.78.0-01-unix.tar.gz'
 
@@ -843,10 +840,10 @@ def test_get_download_url(mock_get_valid_urls):
     ]
 
     result = get_download_url(
+        mock_module,
         state='present',
         version='3.78.0-01',
-        arch='x86-64',
-        validate_certs=True
+        arch='x86-64'
     )
     assert result == 'https://example.com/nexus-x86-64-3.78.0-01.tar.gz'
 
@@ -860,10 +857,10 @@ def test_get_download_url(mock_get_valid_urls):
 
     with pytest.raises(ValueError, match="Multiple matches found for pattern"):
         get_download_url(
+            mock_module,
             state='present',
             version='3.78.0-01',
-            arch='x86-64',
-            validate_certs=True
+            arch='x86-64'
         )
 
     #################################
@@ -873,9 +870,9 @@ def test_get_download_url(mock_get_valid_urls):
 
     with pytest.raises(ValueError, match="No valid download URLs found"):
         get_download_url(
+            mock_module,
             state='present',
-            version='3.78.0-01',
-            validate_certs=True
+            version='3.78.0-01'
         )
 
     #################################
@@ -885,10 +882,10 @@ def test_get_download_url(mock_get_valid_urls):
         'https://custom.example.com/nexus-3.78.0-01-unix.tar.gz']
 
     result = get_download_url(
+        mock_module,
         state='present',
         version='3.78.0-01',
-        base_url='https://custom.example.com/',
-        validate_certs=True
+        base_url='https://custom.example.com/'
     )
     assert result == 'https://custom.example.com/nexus-3.78.0-01-unix.tar.gz'
 
@@ -903,10 +900,10 @@ def test_get_download_url(mock_get_valid_urls):
 
     # Should prefer arch-specific URL
     result = get_download_url(
+        mock_module,
         state='present',
         version='3.78.0-01',
-        arch='x86-64',
-        validate_certs=True
+        arch='x86-64'
     )
     assert result == 'https://example.com/nexus-x86-64-3.78.0-01.tar.gz'
 
@@ -920,10 +917,10 @@ def test_get_download_url(mock_get_valid_urls):
 
     # Should return the single URL even though it doesn't match patterns
     result = get_download_url(
+        mock_module,
         state='present',
         version='3.78.0-01',
-        arch='x86-64',
-        validate_certs=True
+        arch='x86-64'
     )
     assert result == 'https://example.com/nexus-special-3.78.0-01.tar.gz'
 
@@ -938,10 +935,10 @@ def test_get_download_url(mock_get_valid_urls):
     # Should raise error when multiple URLs exist but none match patterns
     with pytest.raises(ValueError, match="No valid download URLs found"):
         get_download_url(
+            mock_module,
             state='present',
             version='3.78.0-01',
-            arch='x86-64',
-            validate_certs=True
+            arch='x86-64'
         )
 
 
@@ -975,8 +972,8 @@ def test_direct_url_download(mock_module, mock_validate, mock_download):
 
     # Verify URL was validated
     mock_validate.assert_called_with(
-        'https://custom-server.com/path/nexus-3.78.0-01-unix.tar.gz',
-        True
+        module_instance,
+        'https://custom-server.com/path/nexus-3.78.0-01-unix.tar.gz'
     )
 
     # Verify direct URL was used (no URL resolution needed)
