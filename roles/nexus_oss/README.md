@@ -176,8 +176,8 @@ and you will have to use a fixed version to download.** If you still want to tak
       # nexus_download_url:
       # nexus_version:
       nexus_proxy_env_vars:
-        http_proxy: your-proxy:port
-        https_proxy: your-proxy:port
+        http_proxy: http://your-proxy:port
+        https_proxy: http://your-proxy:port
         # any other common Ansible proxy setting such as; no_proxy
     ```
 This will use Sonatype's Official Download Archive to identify and download the latest version.

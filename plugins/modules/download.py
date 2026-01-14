@@ -63,11 +63,25 @@ options:
     type: int
     default: 120
     required: false
+  use_proxy:
+    description:
+      - If False, it will not use a proxy, even if one is defined in an environment variable on the target hosts.
+    type: bool
+    default: true
+    required: false
 author:
   - "Brian Veltman (@cloudkrafter)"
 '''
 
 EXAMPLES = '''
+- name: Download the latest Nexus package with Proxy
+  cloudkrafter.nexus.download:
+    state: latest
+    dest: /path/to/download/dir
+  environment:
+    http_proxy: http://proxy.example.com:8080
+    https_proxy: http://proxy.example.com:8080
+
 - name: Download the latest Nexus package
   cloudkrafter.nexus.download:
     state: latest
@@ -133,15 +147,15 @@ import re
 import os
 import json
 from ansible.module_utils.basic import AnsibleModule
-from ansible.module_utils.urls import fetch_url, open_url
+from ansible.module_utils.urls import fetch_url
 
 
-def get_latest_version(validate_certs=True):
+def get_latest_version(module):
     """
     Gets the latest version from Sonatype's API endpoint.
 
     Args:
-        validate_certs (bool): Whether to verify SSL certificates
+        module (AnsibleModule): The Ansible module instance
 
     Returns:
         str: Latest version in format 'X.Y.Z-N'
@@ -151,15 +165,16 @@ def get_latest_version(validate_certs=True):
     """
     url = "https://api.github.com/repos/sonatype/nexus-public/releases/latest"
     try:
-        response = open_url(
+        response, info = fetch_url(
+            module,
             url,
-            validate_certs=validate_certs,
+            follow_redirects='safe',
             headers={'Accept': 'application/json'}
         )
 
-        if response.code != 200:
+        if info['status'] != 200:
             raise ValueError(
-                f"API request failed with status code: {response.code}")
+                f"API request failed with status code: {info['status']}")
 
         data = json.loads(response.read().decode('utf-8'))
 
@@ -188,41 +203,43 @@ def is_valid_version(version):
     return bool(re.match(pattern, version))
 
 
-def validate_download_url(url, validate_certs=True):
+def validate_download_url(module, url):
     """
     Validates if a URL exists by checking HTTP headers.
 
     Args:
+        module (AnsibleModule): The Ansible module instance
         url (str): URL to validate
-        validate_certs (bool): Whether to verify SSL certificates
 
     Returns:
         tuple: (bool, int) - (is_valid, status_code)
     """
     try:
-        response = open_url(
+        response, info = fetch_url(
+            module,
             url,
             method='HEAD',
-            validate_certs=validate_certs,
-            follow_redirects=True,
+            follow_redirects='safe',
             headers={
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/35.0.1916.47 Safari/537.36'
             }
         )
-        return True, response.code
+        if info['status'] == 200:
+            return True, 200
+        return False, info['status']
     except Exception:
         return False, None
 
 
-def get_valid_download_urls(version, arch=None, java_version=None, validate_certs=True, base_url="https://download.sonatype.com/nexus/3/"):
+def get_valid_download_urls(module, version, arch=None, java_version=None, base_url="https://download.sonatype.com/nexus/3/"):
     """
     Returns a list of valid download URLs for a given version and optional parameters.
 
     Args:
+        module (AnsibleModule): The Ansible module instance
         version (str): Version string (e.g., '3.78.0-01')
         arch (str): Optional architecture (e.g., 'aarch64', 'x86_64')
         java_version (str): Optional Java version (e.g., 'java8', 'java11')
-        validate_certs (bool): Whether to verify SSL certificates
         base_url (str): Base URL for downloads
 
     Returns:
@@ -241,7 +258,7 @@ def get_valid_download_urls(version, arch=None, java_version=None, validate_cert
     valid_urls = []
     for name in possible_names:
         url = base_url + name
-        is_valid, status_code = validate_download_url(url, validate_certs)
+        is_valid, status_code = validate_download_url(module, url)
         if is_valid:
             valid_urls.append(url)
 
@@ -315,7 +332,7 @@ def get_possible_package_names(version, arch=None, java_version=None):
     return variants + base_names
 
 
-def get_download_url(state, version=None, arch=None, base_url=None, validate_certs=True):
+def get_download_url(module, state, version=None, arch=None, base_url=None):
     """
     Determines and returns a single download URL based on state, version and architecture.
 
@@ -326,11 +343,11 @@ def get_download_url(state, version=None, arch=None, base_url=None, validate_cer
     4. Java version specific package (nexus-{version}-{java_version}-unix.tar.gz)
 
     Args:
+        module (AnsibleModule): The Ansible module instance
         state (str): Either 'latest' or 'present'
         version (str): Optional version string (required if state is 'present')
         arch (str): Optional target architecture
         base_url (str): Optional URL to download from
-        validate_certs (bool): Whether to verify SSL certificates
 
     Returns:
         str: Single download URL matching the criteria
@@ -347,11 +364,11 @@ def get_download_url(state, version=None, arch=None, base_url=None, validate_cer
     try:
         # Get version and valid URLs
         version = get_latest_version(
-            validate_certs) if state == 'latest' else version
+            module) if state == 'latest' else version
         valid_urls = get_valid_download_urls(
+            module,
             version,
             arch=arch,
-            validate_certs=validate_certs,
             base_url=base_url or "https://download.sonatype.com/nexus/3/"
         )
 
@@ -391,7 +408,7 @@ def get_dest_path(url, dest):
     return os.path.join(dest, url.split('/')[-1])
 
 
-def download_file(module, url, dest, validate_certs=True):
+def download_file(module, url, dest):
     """Downloads a file using Ansible's fetch_url utility."""
 
     destination = get_dest_path(url, dest)
@@ -471,7 +488,8 @@ def main():
         url=dict(type='str', required=False),
         timeout=dict(type='int', required=False, default=120),
         dest=dict(type='path', required=True),
-        validate_certs=dict(type='bool', required=False, default=True)
+        validate_certs=dict(type='bool', required=False, default=True),
+        use_proxy=dict(type='bool', required=False, default=True)
     )
 
     module = AnsibleModule(argument_spec=module_args, supports_check_mode=True)
@@ -501,7 +519,7 @@ def main():
                 download_url = url
 
                 # Validate that the URL exists
-                is_valid, status_code = validate_download_url(download_url, validate_certs)
+                is_valid, status_code = validate_download_url(module, download_url)
                 if not is_valid:
                     raise ValueError(f"The provided URL {download_url} is not accessible")
 
@@ -516,18 +534,18 @@ def main():
                 base_url = url.rstrip('/') + '/'
                 actual_version = version  # We know version is set when url is used
                 valid_urls = get_valid_download_urls(
-                    actual_version, arch=arch, validate_certs=validate_certs, base_url=base_url)
+                    module, actual_version, arch=arch, base_url=base_url)
                 if len(valid_urls) == 1:
                     download_url = valid_urls[0]
                 else:
                     download_url = get_download_url(
-                        state, actual_version, arch=arch, validate_certs=validate_certs, base_url=base_url)
+                        module, state, actual_version, arch=arch, base_url=base_url)
         else:
             # For non-custom URLs, get latest version if needed
             actual_version = version if state == 'present' else get_latest_version(
-                validate_certs)
+                module)
             download_url = get_download_url(
-                state, actual_version, arch=arch, validate_certs=validate_certs)
+                module, state, actual_version, arch=arch)
 
         if not download_url:
             raise ValueError("Failed to determine download URL")
@@ -552,7 +570,7 @@ def main():
 
         # Perform the actual download
         changed, msg, destination, status_code = download_file(
-            module, download_url, dest, validate_certs)
+            module, download_url, dest)
 
         module.exit_json(
             changed=changed,
